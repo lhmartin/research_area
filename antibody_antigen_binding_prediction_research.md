@@ -20,8 +20,9 @@ Antibody-antigen binding prediction represents one of the most challenging domai
 6. [Consensus and Ensemble Approaches](#6-consensus-and-ensemble-approaches)
 7. [Benchmarks and Evaluation Metrics](#7-benchmarks-and-evaluation-metrics)
 8. [Practical Recommendations](#8-practical-recommendations)
-9. [Tools and Resources](#9-tools-and-resources)
-10. [References](#10-references)
+9. [Leveraging Experimental Data for Model Improvement](#9-leveraging-experimental-data-for-model-improvement)
+10. [Tools and Resources](#10-tools-and-resources)
+11. [References](#11-references)
 
 ---
 
@@ -640,9 +641,326 @@ Weights should be optimized on held-out validation set.
 
 ---
 
-## 9. Tools and Resources
+## 9. Leveraging Experimental Data for Model Improvement
 
-### 9.1 Structure Prediction Servers
+### 9.1 Overview: The Opportunity
+
+Having access to a lab that can test proteins for binding creates a significant competitive advantage. Your experimental data can be used to:
+
+1. **Fine-tune existing models** for your specific protein targets
+2. **Build active learning loops** that iteratively improve predictions
+3. **Calibrate confidence scores** for your target domain
+4. **Train specialized scoring functions** for ranking candidates
+
+### 9.2 Fine-Tuning Strategies
+
+#### 9.2.1 Boltz-2 Fine-Tuning for Protein-Protein Affinity
+
+**Current State (arXiv:2512.06592):**
+Researchers have adapted Boltz-2 for protein-protein affinity prediction on TCR3d and PPB-affinity datasets.
+
+**Key Findings:**
+- Boltz-2-PPI alone underperforms sequence-based alternatives in small-data regimes
+- **However**: Combining Boltz-2 embeddings with sequence-based embeddings yields complementary improvements
+- Structure quality is NOT the primary bottleneck (experimental structures don't outperform predicted)
+- Best approach: **Hybrid models** combining structure + sequence signals
+
+**Practical Recommendation:**
+```
+┌─────────────────────────────────────────────────────────────┐
+│                YOUR EXPERIMENTAL DATA                        │
+│         (binding/non-binding, Kd values, etc.)              │
+└─────────────────────────────┬───────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│              FEATURE EXTRACTION                              │
+│  ┌─────────────────┐     ┌─────────────────┐               │
+│  │  Boltz-2        │     │  ESM-2/ESM3     │               │
+│  │  Structure      │     │  Sequence       │               │
+│  │  Embeddings     │     │  Embeddings     │               │
+│  └────────┬────────┘     └────────┬────────┘               │
+│           └──────────┬───────────┘                          │
+│                      ▼                                      │
+│              CONCATENATE                                    │
+└─────────────────────────────┬───────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│           PREDICTION HEAD (Train on your data)              │
+│              MLP / Attention / Regression                    │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### 9.2.2 ESM/PLM Fine-Tuning with LoRA
+
+**Why LoRA (Low-Rank Adaptation)?**
+- Reduces trainable parameters to ~18% of full model
+- Enables fine-tuning on consumer GPUs
+- Preserves pre-trained knowledge while adapting to your data
+- 4-9× faster training, 3-14× lower memory usage
+
+**AbTune Approach (October 2025):**
+- Layer-wise selective fine-tuning specifically for antibodies
+- Fine-tune only 50-75% of LoRA layers (not all!)
+- Substantial improvements with fraction of compute vs. full fine-tuning
+
+**Technical Setup:**
+```python
+# Recommended LoRA configuration for antibody affinity
+from peft import LoraConfig
+
+config = LoraConfig(
+    r=4,  # Rank (minimum 4 recommended, peaks at r=4-16)
+    lora_alpha=16,
+    target_modules=["query", "value"],  # Key finding: only Q,V needed
+    lora_dropout=0.1,
+    bias="none"
+)
+```
+
+**Data Requirements:**
+- Minimum: ~100-500 labeled examples for meaningful fine-tuning
+- Optimal: 1,000-10,000 examples for robust performance
+- Critical: Include both positives AND negatives
+
+#### 9.2.3 SimBinder-IF Approach (December 2025)
+
+**Method:** Fine-tune ESM-IF using preference optimization
+
+**Key Innovation:**
+- Train model to assign higher likelihood to sequences with higher affinity
+- Keep structure encoder frozen, only update decoder (18% of parameters)
+- Uses Simple Preference Optimization (SimPO)
+
+**Results:**
+- 55% relative improvement in Spearman correlation
+- Mean correlation increased from 0.264 → 0.410
+
+**When to Use:**
+- When you have relative binding affinity rankings (not just binary)
+- When you want to use inverse folding for design
+
+### 9.3 Active Learning Workflows
+
+#### 9.3.1 The Active Learning Loop
+
+Active learning iteratively selects the most informative samples for experimental testing:
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                    ACTIVE LEARNING CYCLE                      │
+│                                                               │
+│   ┌─────────┐    ┌─────────┐    ┌─────────┐    ┌─────────┐  │
+│   │ Initial │───▶│ Train   │───▶│ Select  │───▶│  Test   │  │
+│   │  Data   │    │ Model   │    │ Samples │    │  in Lab │  │
+│   └─────────┘    └────┬────┘    └─────────┘    └────┬────┘  │
+│        ▲              │                              │       │
+│        │              │                              │       │
+│        └──────────────┴──────────────────────────────┘       │
+│                     ITERATE                                   │
+└──────────────────────────────────────────────────────────────┘
+```
+
+#### 9.3.2 Sample Selection Strategies
+
+| Strategy | Description | Best For |
+|----------|-------------|----------|
+| **Uncertainty Sampling** | Select samples where model is least confident | General exploration |
+| **Diversity Sampling** | Select samples that are most different from training set | Broad coverage |
+| **Expected Improvement** | Balance exploitation vs. exploration (Bayesian) | Optimization |
+| **Batch Diversity** | Ensure selected batch is internally diverse | Efficient batching |
+
+#### 9.3.3 Ultra-Low Data Active Learning (2025)
+
+**Key Finding:** Starting from randomly selected binders, an active-learning loop selecting only **110 molecules** from a 100k library achieved 100% probability of finding 5+ top-1% compounds.
+
+**Practical Protocol:**
+1. **Round 0**: Test 10-20 random candidates + known controls
+2. **Round 1-N**:
+   - Train model on all data so far
+   - Score untested candidates
+   - Select top candidates by acquisition function
+   - Test 10-50 candidates per round
+3. **Stopping**: When top candidates plateau or budget exhausted
+
+**Acquisition Functions:**
+```python
+# Uncertainty-based selection
+def uncertainty_acquisition(predictions, uncertainties):
+    return uncertainties.argsort()[-batch_size:]
+
+# Upper Confidence Bound (UCB)
+def ucb_acquisition(predictions, uncertainties, beta=2.0):
+    scores = predictions + beta * uncertainties
+    return scores.argsort()[-batch_size:]
+
+# Expected Improvement
+def expected_improvement(predictions, uncertainties, best_so_far):
+    from scipy.stats import norm
+    z = (predictions - best_so_far) / uncertainties
+    return (predictions - best_so_far) * norm.cdf(z) + uncertainties * norm.pdf(z)
+```
+
+### 9.4 Experimental Data Types and Their Uses
+
+| Data Type | Example Assay | Best Model Application |
+|-----------|---------------|----------------------|
+| **Binary binding** | ELISA, Y2H | Classification fine-tuning |
+| **Binding affinity (Kd)** | SPR, ITC, BLI | Regression fine-tuning |
+| **Relative ranking** | Competition assay | Preference optimization |
+| **Deep mutational scanning** | Yeast/phage display | Mutation effect prediction |
+| **Structural data** | X-ray, cryo-EM | Docking refinement |
+
+### 9.5 Deep Mutational Scanning (DMS) for Training Data
+
+#### 9.5.1 AbAgym Dataset Benchmark
+
+**Resource:** AbAgym provides ~335k mutations in antibody-antigen complexes with experimentally quantified binding effects.
+
+**Use Cases:**
+1. Benchmark your fine-tuned models
+2. Pre-train on DMS data before fine-tuning on your specific target
+3. Transfer learning from related antibody systems
+
+#### 9.5.2 Generating Your Own DMS Data
+
+**High-throughput Protocol:**
+1. Create CDR variant library (saturation mutagenesis or designed)
+2. Display on yeast/phage
+3. Sort by binding (FACS or panning)
+4. Deep sequence sorted populations
+5. Calculate enrichment ratios → binding scores
+
+**Data Output:** Thousands of sequence-binding pairs for training
+
+**Caveat - Biophysical Ambiguity:**
+- DMS scores conflate stability and binding effects
+- Consider including expression controls
+- Use structure-aware models to help deconvolute
+
+### 9.6 Transfer Learning Strategies
+
+#### 9.6.1 From General to Specific
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Layer 1: Pre-trained PLM (ESM-2, 650M params)             │
+│           - General protein knowledge                       │
+│           - Keep FROZEN or minimal LoRA                     │
+├─────────────────────────────────────────────────────────────┤
+│  Layer 2: Antibody-specific fine-tuning                     │
+│           - Train on public Ab-Ag data (SAbDab, AbAgym)    │
+│           - Light fine-tuning with LoRA                     │
+├─────────────────────────────────────────────────────────────┤
+│  Layer 3: Your target-specific fine-tuning                  │
+│           - Train on YOUR experimental data                 │
+│           - Full fine-tuning of prediction head             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### 9.6.2 Cross-Target Transfer
+
+**Scenario:** You have data for Target A, want to predict for Target B
+
+**Approach:**
+1. Fine-tune on Target A data
+2. Evaluate on Target B (often works for related targets)
+3. If poor, collect small Target B dataset and fine-tune further
+
+**When Transfer Works Best:**
+- Targets share structural similarity
+- Similar epitope types (linear vs. conformational)
+- Same antibody format (IgG, VHH, etc.)
+
+### 9.7 Calibrating Confidence Scores
+
+#### 9.7.1 The Problem
+
+Model confidence (ipTM, pDockQ) may not reflect true success probability for your specific targets.
+
+#### 9.7.2 Calibration Protocol
+
+1. **Collect Calibration Set:**
+   - Run predictions on ~50-100 candidates
+   - Experimentally test all of them
+   - Record prediction confidence + experimental outcome
+
+2. **Build Calibration Curve:**
+   ```python
+   from sklearn.calibration import calibration_curve
+
+   prob_true, prob_pred = calibration_curve(
+       y_true=experimental_results,
+       y_prob=model_confidences,
+       n_bins=10
+   )
+   ```
+
+3. **Apply Calibration:**
+   - Use isotonic regression or Platt scaling
+   - Map raw confidence → calibrated probability
+
+### 9.8 Recommended Workflow for Labs with Binding Data
+
+#### Phase 1: Baseline Establishment (Week 1-2)
+1. Run Boltz-2/AF3 on your target system
+2. Test 20-50 predictions experimentally
+3. Establish baseline performance metrics
+
+#### Phase 2: Initial Fine-Tuning (Week 3-4)
+1. Extract ESM-2 embeddings for all tested sequences
+2. Train simple MLP classifier/regressor
+3. Evaluate improvement over baseline
+
+#### Phase 3: Active Learning (Ongoing)
+1. Use trained model to score candidate pool
+2. Select diverse, high-uncertainty candidates
+3. Test in lab, add to training set
+4. Retrain model, repeat
+
+#### Phase 4: Advanced Fine-Tuning (As Data Grows)
+1. When you have 500+ examples: Apply LoRA fine-tuning to ESM-2
+2. When you have 1000+ examples: Consider Boltz-2-PPI hybrid
+3. Continuously expand and refine
+
+### 9.9 Code Resources for Fine-Tuning
+
+| Resource | URL | Use Case |
+|----------|-----|----------|
+| **HuggingFace PEFT** | github.com/huggingface/peft | LoRA fine-tuning |
+| **ESM** | github.com/facebookresearch/esm | PLM embeddings |
+| **Boltz** | github.com/jwohlwend/boltz | Structure + affinity |
+| **fair-esm** | github.com/facebookresearch/esm | ESM-IF for inverse folding |
+| **AbTune** | (see bioRxiv 2025.10.17.682998) | Antibody-specific fine-tuning |
+
+### 9.10 Key Considerations
+
+**Data Quality > Data Quantity:**
+- Clean, well-annotated data is more valuable than noisy large datasets
+- Include proper controls (positive and negative)
+- Document experimental conditions
+
+**Avoid Overfitting:**
+- Use proper train/validation/test splits
+- Consider leave-one-target-out validation
+- Monitor for data leakage (sequence similarity)
+
+**Combine Modalities:**
+- Sequence-only models are strong baselines
+- Structure adds complementary signal
+- Best results from hybrid approaches
+
+**Iterate Quickly:**
+- Start with simple models (MLP on embeddings)
+- Add complexity only when justified by data
+- Prioritize experimental throughput over model complexity
+
+---
+
+## 10. Tools and Resources
+
+### 10.1 Structure Prediction Servers
 
 | Tool | URL | License | Best For |
 |------|-----|---------|----------|
@@ -652,7 +970,7 @@ Weights should be optimized on held-out validation set.
 | **Boltz-1** | github.com/jwohlwend/boltz | MIT | Open-source structure |
 | **Chai-1** | github.com/chaidiscovery/chai-lab | Apache | Commercial use |
 
-### 9.2 Antibody-Specific Tools
+### 10.2 Antibody-Specific Tools
 
 | Tool | Purpose | Speed |
 |------|---------|-------|
@@ -661,7 +979,7 @@ Weights should be optimized on held-out validation set.
 | **ImmuneBuilder** | Ab/Nb structure suite | Fast |
 | **ABodyBuilder2** | Antibody modeling | Fast |
 
-### 9.3 Scoring Tools
+### 10.3 Scoring Tools
 
 | Tool | Type | Code |
 |------|------|------|
@@ -670,7 +988,7 @@ Weights should be optimized on held-out validation set.
 | **FoldX** | Physics-based | foldxsuite.crg.eu |
 | **HADDOCK** | Docking + scoring | wenmr.science.uu.nl |
 
-### 9.4 Databases
+### 10.4 Databases
 
 | Database | Content | URL |
 |----------|---------|-----|
@@ -678,10 +996,12 @@ Weights should be optimized on held-out validation set.
 | **CAPRI** | Docking benchmarks | ebi.ac.uk/pdbe/complex-pred/capri |
 | **PDB** | All structures | rcsb.org |
 | **IMGT** | Immunogenetics | imgt.org |
+| **AbAgym** | DMS mutations | biorxiv.org/content/10.1101/2025.07.15.664862 |
+| **PPB-Affinity** | PPI binding affinities | (see literature) |
 
 ---
 
-## 10. References
+## 11. References
 
 ### Structure Prediction Methods
 
@@ -738,6 +1058,28 @@ Weights should be optimized on held-out validation set.
 18. [Estimating Absolute Protein-Protein Binding Free Energies by a Super Learner Model (JCIM 2024)](https://pubs.acs.org/doi/10.1021/acs.jcim.4c01641)
 
 19. [Assessment of Solvated Interaction Energy Function for Ranking Antibody-Antigen Binding Affinities (JCIM 2016)](https://pubs.acs.org/doi/abs/10.1021/acs.jcim.6b00043)
+
+### Fine-Tuning and Active Learning
+
+20. [AbTune: layer-wise selective Fine-Tuning of protein language models for Antibodies (bioRxiv 2025)](https://www.biorxiv.org/content/10.1101/2025.10.17.682998v1.full)
+
+21. [SimBinder-IF: Structure-Aware Antibody Design with Affinity-Optimized Inverse Folding (arXiv 2025)](https://arxiv.org/html/2512.17815v1)
+
+22. [Supervised fine-tuning of pre-trained antibody language models improves antigen specificity prediction (Bioinformatics 2024)](https://pmc.ncbi.nlm.nih.gov/articles/PMC11118465/)
+
+23. [Democratizing Protein Language Models with Parameter-Efficient Fine-Tuning (PNAS 2024)](https://www.pnas.org/doi/10.1073/pnas.2405840121)
+
+24. [Efficient inference, training, and fine-tuning of protein language models (iScience 2025)](https://www.cell.com/iscience/fulltext/S2589-0042(25)01756-0)
+
+25. [Benchmarking Active Learning Protocols for Ligand-Binding Affinity Prediction (JCIM 2024)](https://pubs.acs.org/doi/10.1021/acs.jcim.4c00220)
+
+26. [Finding Drug Candidate Hits With A Hundred Samples: Ultralow Data Screening With Active Learning (ChemistryEurope 2025)](https://chemistry-europe.onlinelibrary.wiley.com/doi/10.1002/ceur.202500134)
+
+27. [Unsupervised evolution of protein and antibody complexes with a structure-informed language model (Science 2024)](https://pubmed.ncbi.nlm.nih.gov/38963838/)
+
+28. [AbAgym: a well-curated dataset for the mutational analysis of antibody-antigen complexes (bioRxiv 2025)](https://www.biorxiv.org/content/10.1101/2025.07.15.664862v1.full)
+
+29. [Deep mutational learning for the selection of therapeutic antibodies resistant to viral evolution (Nature BME 2025)](https://www.nature.com/articles/s41551-025-01353-4)
 
 ---
 
