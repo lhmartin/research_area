@@ -45,6 +45,7 @@ As of 2025, the best methods achieve:
 |--------|----------------------|----------------------|-------|
 | **AlphaFold3 (1 seed)** | 10-13% | 13.3% | High-accuracy (DockQ > 0.8) |
 | **AlphaFold3 (1000 seeds)** | ~60% | - | Extensive sampling required |
+| **Boltz-2** | Improved over Boltz-1 | ~43% (3/7 targets) | Structure + affinity prediction |
 | **AlphaRED** | 43% | - | AF2-M + Rosetta replica exchange |
 | **HelixFold-Multimer** | 52.7% | - | Fine-tuned for Ab-Ag |
 | **Boltz-1** | 4.08% | 5% | Open source (MIT) |
@@ -112,7 +113,47 @@ As of 2025, the best methods achieve:
 - Boltz-1: 21%
 - AlphaFold2: 13%
 
-### 2.5 AI-Augmented Physics-Based Docking
+### 2.5 Boltz-2 (June 2025)
+
+**Major Advancement:** First open-source model to jointly predict structure AND binding affinity.
+
+**Key Capabilities:**
+- Structure prediction (building on Boltz-1 architecture)
+- Binding affinity prediction approaching FEP accuracy
+- ~1000x faster than physics-based Free Energy Perturbation (FEP)
+- Cost reduction: ~$100/prediction (FEP) → cents (Boltz-2)
+- Prediction time: 6-12 hours (FEP) → ~20 seconds (Boltz-2)
+
+**Antibody-Antigen Performance:**
+- Shows improvement over Boltz-1 on Ab-Ag complexes
+- Still lags behind AlphaFold3 on antibody benchmarks
+- On nanobody-antigen: correctly predicted 3/7 targets (~43%)
+- Yields predominantly high and medium-quality models (few incorrect)
+- DockQ ≈ 0.91 on training-set-like structures; ≈ 0.70 on novel complexes
+
+**Benchmark Results:**
+- CASP16 affinity challenge: Outperformed all top-ranking participants (out-of-the-box, no fine-tuning)
+- FEP+ benchmark: 0.6 correlation with experimental results (matching FEP simulations)
+
+**Controllability Features:**
+- Experimental method conditioning
+- Distance constraints
+- Multi-chain template integration
+
+**Why Boltz-2 Matters for Antibody Work:**
+1. **Affinity prediction**: Can rank antibody candidates by predicted binding strength
+2. **Rapid screening**: Enables evaluation of thousands of candidates
+3. **Open source**: MIT license for academic and commercial use
+4. **Fine-tunable**: Can be adapted for specific protein-protein affinity tasks (see arXiv:2512.06592)
+
+**Limitations:**
+- Still underperforms AlphaFold3 on pure structure prediction for Ab-Ag
+- Performance gap on unseen antigens
+- Affinity predictions may need calibration for specific systems
+
+**Access:** github.com/jwohlwend/boltz (MIT License)
+
+### 2.6 AI-Augmented Physics-Based Docking
 
 Recent work (Bioinformatics 2025) combines:
 - AI-based initial structure prediction
@@ -136,11 +177,12 @@ This hybrid approach addresses limitations of pure ML methods.
 
 ### Current Performance on Nanobody-Antigen
 
-| Method | High-Accuracy Rate |
-|--------|-------------------|
-| AlphaFold3 | 13.3% |
-| Boltz-1 | 5% |
-| Chai-1 | 3.33% |
+| Method | High-Accuracy Rate | Notes |
+|--------|-------------------|-------|
+| **Boltz-2** | ~43% (3/7 targets) | Significant improvement |
+| AlphaFold3 | 13.3% | Single seed |
+| Boltz-1 | 5% | - |
+| Chai-1 | 3.33% | - |
 
 ### Specialized Nanobody Tools
 
@@ -521,8 +563,9 @@ Weights should be optimized on held-out validation set.
 ┌─────────────────────────────────────────────────────────────┐
 │            STEP 1: Structure Prediction                      │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐         │
-│  │ AlphaFold3  │  │ HelixFold-  │  │   Boltz-1   │         │
-│  │ (if avail)  │  │  Multimer   │  │             │         │
+│  │ AlphaFold3  │  │ HelixFold-  │  │   Boltz-2   │         │
+│  │ (if avail)  │  │  Multimer   │  │  (struct+   │         │
+│  │             │  │             │  │  affinity)  │         │
 │  └─────────────┘  └─────────────┘  └─────────────┘         │
 │         Generate multiple seeds (≥100 recommended)          │
 └─────────────────────────────┬───────────────────────────────┘
@@ -564,11 +607,13 @@ Weights should be optimized on held-out validation set.
 | Scenario | Recommended Approach |
 |----------|---------------------|
 | **Academic research (computational access)** | AlphaFold3 with 1000 seeds |
+| **Structure + Affinity needed** | **Boltz-2** (joint prediction) |
 | **Limited compute** | HelixFold-Multimer or AlphaRED |
-| **Nanobody targets** | NanoBodyBuilder2 + AF3 |
-| **High-throughput screening** | Boltz-1 + EuDockScore-Ab |
+| **Nanobody targets** | **Boltz-2** or NanoBodyBuilder2 + AF3 |
+| **High-throughput screening** | **Boltz-2** (fast affinity ranking) |
+| **Candidate ranking by affinity** | **Boltz-2** affinity predictions |
 | **De novo design** | RFdiffusion (fine-tuned) |
-| **Mutation effects** | Structure + FoldX/DDMut-PPI |
+| **Mutation effects** | Structure + FoldX/DDMut-PPI or fine-tuned Boltz-2 |
 
 ### 8.3 Confidence Calibration
 
@@ -602,8 +647,9 @@ Weights should be optimized on held-out validation set.
 | Tool | URL | License | Best For |
 |------|-----|---------|----------|
 | **AlphaFold Server** | alphafoldserver.com | Academic | General Ab-Ag |
+| **Boltz-2** | github.com/jwohlwend/boltz | MIT | **Structure + Affinity** |
 | **HelixFold** | GitHub | Open | Ab-Ag specific |
-| **Boltz** | github.com/jwohlwend/boltz | MIT | Open-source option |
+| **Boltz-1** | github.com/jwohlwend/boltz | MIT | Open-source structure |
 | **Chai-1** | github.com/chaidiscovery/chai-lab | Apache | Commercial use |
 
 ### 9.2 Antibody-Specific Tools
@@ -639,15 +685,21 @@ Weights should be optimized on held-out validation set.
 
 ### Structure Prediction Methods
 
-1. [What does AlphaFold3 learn about antibody and nanobody docking, and what remains unsolved? (mAbs 2025)](https://www.tandfonline.com/doi/full/10.1080/19420862.2025.2545601)
+1. [Boltz-2: Towards Accurate and Efficient Binding Affinity Prediction (bioRxiv 2025)](https://www.biorxiv.org/content/10.1101/2025.06.14.659707v1)
 
-2. [AlphaFold and Docking Approaches for Antibody-Antigen and Other Targets: Insights From CAPRI Rounds 47-55 (Proteins 2025)](https://onlinelibrary.wiley.com/doi/10.1002/prot.26801)
+2. [On fine-tuning Boltz-2 for protein-protein affinity prediction (arXiv 2025)](https://arxiv.org/abs/2512.06592)
 
-3. [AI-augmented physics-based docking for antibody-antigen complex prediction (Bioinformatics 2025)](https://academic.oup.com/bioinformatics/article/41/4/btaf129/8093612)
+3. [What does AlphaFold3 learn about antibody and nanobody docking, and what remains unsolved? (mAbs 2025)](https://www.tandfonline.com/doi/full/10.1080/19420862.2025.2545601)
 
-4. [Atomically accurate de novo design of antibodies with RFdiffusion (Nature 2025)](https://www.nature.com/articles/s41586-025-09721-5)
+4. [AlphaFold and Docking Approaches for Antibody-Antigen and Other Targets: Insights From CAPRI Rounds 47-55 (Proteins 2025)](https://onlinelibrary.wiley.com/doi/10.1002/prot.26801)
 
-5. [Unveiling the new chapter in nanobody engineering: advances in traditional construction and AI-driven optimization (J Nanobiotechnology 2025)](https://link.springer.com/article/10.1186/s12951-025-03169-5)
+5. [AI-augmented physics-based docking for antibody-antigen complex prediction (Bioinformatics 2025)](https://academic.oup.com/bioinformatics/article/41/4/btaf129/8093612)
+
+6. [Atomically accurate de novo design of antibodies with RFdiffusion (Nature 2025)](https://www.nature.com/articles/s41586-025-09721-5)
+
+7. [Unveiling the new chapter in nanobody engineering: advances in traditional construction and AI-driven optimization (J Nanobiotechnology 2025)](https://link.springer.com/article/10.1186/s12951-025-03169-5)
+
+8. [Evaluating Deep Learning Based Structure Prediction Methods on Antibody-Antigen Complexes (bioRxiv 2025)](https://www.biorxiv.org/content/10.1101/2025.07.11.662141v1.full)
 
 ### Scoring Functions
 
@@ -715,13 +767,25 @@ ipTM Score Interpretation:
 ### C. Method Selection Matrix
 
 ```
-                        │ Speed │ Accuracy │ Open Source │ Ab-Ag Specific │
-────────────────────────┼───────┼──────────┼─────────────┼────────────────│
-AlphaFold3 (1000 seeds) │  Slow │   Best   │   Academic  │       No       │
-HelixFold-Multimer      │  Med  │   Good   │     Yes     │      Yes       │
-AlphaRED                │  Med  │   Good   │     Yes     │       No       │
-Boltz-1                 │  Fast │   Fair   │     MIT     │       No       │
-NanoBodyBuilder2        │ VFast │   Good   │     Yes     │   Nanobody     │
+                        │ Speed │ Accuracy │ Open Source │ Ab-Ag Specific │ Affinity │
+────────────────────────┼───────┼──────────┼─────────────┼────────────────┼──────────│
+AlphaFold3 (1000 seeds) │  Slow │   Best   │   Academic  │       No       │    No    │
+Boltz-2                 │  Fast │   Good   │     MIT     │   Improved     │   Yes    │
+HelixFold-Multimer      │  Med  │   Good   │     Yes     │      Yes       │    No    │
+AlphaRED                │  Med  │   Good   │     Yes     │       No       │    No    │
+Boltz-1                 │  Fast │   Fair   │     MIT     │       No       │    No    │
+NanoBodyBuilder2        │ VFast │   Good   │     Yes     │   Nanobody     │    No    │
+```
+
+### D. Boltz-2 vs FEP Comparison
+
+```
+                    │    Boltz-2    │      FEP      │
+────────────────────┼───────────────┼───────────────│
+Time per prediction │   ~20 sec     │   6-12 hours  │
+Cost per prediction │   ~$0.01      │   ~$100       │
+Correlation w/ exp  │     0.6       │     0.6       │
+Open source         │     Yes       │    Varies     │
 ```
 
 ---
